@@ -1,7 +1,7 @@
 
 
 
-
+# confirm correct package version - remove this before ESA
 if (packageVersion("SpFut.flexiSDM") != "1.1.1") {
   remotes::install_git(
     "https://code.usgs.gov/eastern-ecological-science-center/nearmi/SpFut-flexiSDM.git",
@@ -9,10 +9,17 @@ if (packageVersion("SpFut.flexiSDM") != "1.1.1") {
   )
 }
 
+
+# This script fits a model for the Great Salt Lake Cyclops and compares
+# the model output with the true distribution and parameters.
+
+
+
+# Set up environment ----
 library(tidyverse)
 library(SpFut.flexiSDM)
 
-load("code/ESAshortcourse/data.RData")
+load("data/data.RData", verbose = T)
 
 set.seed(1)
 
@@ -67,8 +74,6 @@ ggplot(region$boundary) + geom_sf()
 
 head(species.data$locs$disc)
 
-
-
 head(species.data$locs$cont)
 
 ggplot() +
@@ -102,22 +107,21 @@ map_species_data(title = "Simulated data",
 
 # Define linear and quadratic covariates. These need to match the column names
 # in `covar`
-
 covs.z    <- c("wetland", "footprint", "S", "elevation", "elevation2")
 
 # Specify covariates for iNat data. Because PO data are modeled at the hexbin level,
 # these covariates should also be stored in `covar`
-# stored in `covar`.
 covs.PO <- c("effort")
-
-# NOTE: `covar` needs to contain scaled values and squared values for any
-# quadratic terms
 
 
 # covar is a data.frame that contains covariate information
 #     - conus.grid.id must match conus.grid.id in region$species.grid
 
 head(covar)
+
+# NOTE: `covar` needs to contain scaled values and squared values for any
+# quadratic terms
+
 
 
 gridcovar <- full_join(region$sp.grid, covar, by = "conus.grid.id")
@@ -138,6 +142,7 @@ cov.labs <- data.frame(covariate = names(covar),
 cov.labs
 
 
+# Plot covariates
 plot_covar(covar = covar, region = region, cov.labs = cov.labs, scaled = TRUE)$plot
 cor_covar(covar = covar, cov.labs = cov.labs, color.threshold = 0.25)$plot
 
@@ -159,16 +164,17 @@ cor_covar(covar = covar, cov.labs = cov.labs, color.threshold = 0.25)$plot
 # of folds that blocks are grouped into
 spatblocks <- make_CV_blocks(region, rows = 5, cols = 5, k = 3)
 
-# Assign a fold to leave out (options: none, 1:k)
-fold.out <- "none"
-
 head(spatblocks)
 
 ggplot() +  
   geom_sf(data = spatblocks, aes(fill = as.factor(folds))) + # CV blocks
   geom_sf(data = region$region, fill = NA) # overlay study region
 
-# Now, generate gridkey, assigning which fold to leave out 
+
+# Assign a fold to leave out (options: none, 1:k)
+fold.out <- "none"
+
+# Now generate gridkey, assigning which fold to leave out
 gridkey <- make_gridkey(region, spatblocks, fold.out = fold.out)
 
 head(gridkey)
@@ -371,6 +377,13 @@ if (run.during.break) {
   
 }
 
+
+# If you were unable to fit the model, read in the output:
+if (!exists("out")) {
+  load("data/output.RData")
+}
+
+
 # View model output ----
 
 # view beta parameters
@@ -420,6 +433,16 @@ map_species_data(title = "Estimated occupancy probability",
 
 names(datalist) <- names(species.data$obs)
 
+# sim_compare() (and most flexiSDM plotting functions) produce a list with 
+# two objects:
+#     - plot: a ggplot object
+#     - data: a data.frame containing the data used to make the plot
+tmp <- sim_compare(out, true = true, plot = "process")
+
+tmp$plot
+tmp$data
+
+# look at outputs
 sim_compare(out, true = true, plot = "process")$plot
 sim_compare(out, true = true, plot = "lambda")$plot
 sim_compare(out, true = true, plot = "spat")$plot
@@ -427,3 +450,81 @@ sim_compare(out, true = true, plot = "spat")$plot
 sim_compare(out, true = datalist, plot = "alpha")$plot
 sim_compare(out, true = datalist, plot = "obs")$plot
 
+
+
+# Compare model estimates with SDMs fit with each individual dataset ----
+
+# load outputs for models that fit each dataset individually
+load("data/model-outputs.RData", verbose = T)
+
+# each of these objects contains sim_compare() output for each model
+
+
+## Compare process parameters ----
+proc <- sim_compare(out, true = true, plot = "process")$dat %>%
+  mutate(model = "all") # label this model
+
+# add to all.proc
+all.proc <- bind_rows(all.proc, proc)
+
+
+ggplot(all.proc) +
+  # plot 0
+  geom_hline(yintercept = 0) +
+  
+  # plot true value
+  geom_hline(aes(yintercept = true), color = "darkblue", linetype = "dashed", linewidth = 0.75) +
+  
+  # plot estimates with CI
+  geom_pointrange(aes(x = covariate, y = mean, ymin = lo, ymax = hi, 
+                      color = model, group = model), 
+                  position = position_dodge(width = 0.8)) +
+  
+  # format
+  facet_wrap(~ covariate, scales = "free_x") +
+  theme_bw()
+
+
+
+
+## Compare intensity estimates ----
+
+lamb <- sim_compare(out, true = true, plot = "lambda")$dat %>%
+  mutate(model = "all")
+all.lamb <- bind_rows(all.lamb, lamb)
+
+ggplot(all.lamb) +
+  geom_point(aes(x = true, y = mean, color = model)) +
+  facet_wrap(~ model, scales = "free") +
+  coord_cartesian(xlim = c(0, 50), ylim = c(0, 50))
+
+
+
+# map estimated intensity 
+
+# join with sp.grid to make sf object
+all.lamb.sf <- region$sp.grid %>%
+  full_join(all.lamb, by = "conus.grid.id")
+
+# truncate at 95%ile to help color scale
+q95 <- quantile(all.lamb.sf$mean, 0.95)
+all.lamb.sf$mean[which(all.lamb.sf$mean > q95)] <- q95
+
+# map
+ggplot(all.lamb.sf) +
+  geom_sf(aes(fill = mean, color = mean)) +
+  facet_wrap(~ model) +
+  
+  # color scale
+  viridis::scale_fill_viridis(option = "magma") +
+  viridis::scale_color_viridis(option = "magma")
+
+
+# map differences
+ggplot(all.lamb.sf) +
+  geom_sf(aes(fill = mean - true, color = mean - true)) +
+  facet_wrap(~ model) +
+  
+  # color scale
+  scale_fill_gradient2() +
+  scale_color_gradient2()
