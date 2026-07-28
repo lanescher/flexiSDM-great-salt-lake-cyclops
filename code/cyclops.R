@@ -280,10 +280,10 @@ sp.data$count4
 tmp <- data_for_nimble(sp.data = sp.data,
                        covar = covar,
                        covs.z = covs.z,
-                       sp.auto = TRUE,      
-                       coarse.grid = FALSE,
                        region = region,
                        gridkey = gridkey,
+                       sp.auto = TRUE,      
+                       coarse.grid = FALSE,
                        spatRegion = NULL)
 
 data      <- tmp$data
@@ -397,7 +397,7 @@ plot_chains(samples, data = data, constants = constants, cov.labs = cov.labs,
                        plot = "alpha", cutoff = 0)$plot
 plot_pars(out = out$alpha, cov.labs = cov.labs)$plot
 
-# View chains for dataset intercepts (alpha)
+# View chains for detection parameters
 plot_chains(samples, data = data, constants = constants, cov.labs = cov.labs,
             plot = "observation", cutoff = 0)$plot
 plot_pars(out = out$obs.coef, cov.labs = cov.labs)$plot
@@ -423,7 +423,8 @@ map_species_data(title = "Estimated occupancy probability",
                  plot.range = FALSE,
                  plot.region = TRUE)$plot
 
-
+# See documentation for many more options to map
+?map_species_data()
 
 # Compare model estimates to truth ----
 
