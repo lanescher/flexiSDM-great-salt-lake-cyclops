@@ -495,9 +495,16 @@ lamb <- sim_compare(out, true = true, plot = "lambda")$dat %>%
 all.lamb <- bind_rows(all.lamb, lamb)
 
 ggplot(all.lamb) +
+  
+  # plot lambdas
   geom_point(aes(x = true, y = mean, color = model)) +
+  
+  # 1-to-1 line
+  geom_abline(intercept = 0, slope = 1) +
+  
+  # parameters
   facet_wrap(~ model, scales = "free") +
-  coord_cartesian(xlim = c(0, 50), ylim = c(0, 50))
+  coord_cartesian(xlim = c(0, 25), ylim = c(0, 25))
 
 
 
@@ -508,7 +515,7 @@ all.lamb.sf <- region$sp.grid %>%
   full_join(all.lamb, by = "conus.grid.id")
 
 # truncate at 95%ile to help color scale
-q95 <- quantile(all.lamb.sf$mean, 0.95)
+q95 <- quantile(all.lamb.sf$mean, 0.90)
 all.lamb.sf$mean[which(all.lamb.sf$mean > q95)] <- q95
 
 # map
