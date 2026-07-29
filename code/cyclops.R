@@ -720,4 +720,13 @@ ggplot(all.lamb.sf) +
 
 ## _Small group discussion ----
 # 1. How well does the integrated model recover the parameters?
-# 2. Which model performs best? Which performs worst?
+# 2. Which model performs best? Which performs worst? Why?
+
+
+
+
+# _Optional extensions for practice ----
+
+# Fit the model using a coarse spatial grid
+# Fit the model leaving a fold out for cross validation
+# Fit the model without the iNat dataset
