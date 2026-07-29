@@ -1,20 +1,34 @@
 
+# Install the SpFut.flexiSDM package (this tutorial uses v1.1.1). 
+# When prompted, enter `1` to update all required packages
 
-
-# confirm correct package version - remove this before ESA
 if (packageVersion("SpFut.flexiSDM") != "1.1.1") {
+  
+  # This package is not on CRAN, so you can't install it the way you would normally 
+  # install a package.
+  
   remotes::install_git(
     "https://code.usgs.gov/eastern-ecological-science-center/nearmi/SpFut-flexiSDM.git",
     ref = "1.1.1"
   )
+  
 }
+
+
+# Install Rtools, if you do not have it already. Select the correct version
+# of Rtools from this page: https://cran.r-project.org/bin/windows/Rtools/ 
+# based on your version of R.
+# (to figure out what version of R you are using:)
+getRversion()
+
+# Now restart R.
+
+# _______________________________________________________________ ----
 
 
 # This script fits a model for the Great Salt Lake Cyclops and compares
 # the model output with the true distribution and parameters.
 
-# ---------------------------------------------------------------------------
-#
 # SpFut.flexiSDM fits an integrated species distribution model (SDM): a single
 # Bayesian model that combines several datasets of DIFFERENT types (e.g.,
 # presence-only, detection/non-detection, counts) to estimate one shared
@@ -26,8 +40,9 @@ if (packageVersion("SpFut.flexiSDM") != "1.1.1") {
 #   - PROCESS model: the true ecology. 
 #   - OBSERVATION model: how each dataset observes the process. 
 #
-# Because this is a SIMULATED species, we know the true parameters and the true
-# distribution, so at the end we can check how well the model recovered them.
+# Because the Great Salt Lake Cyclops is a SIMULATED species, we know the true 
+# parameters and the true distribution, so at the end we can check how well 
+# the model recovered them.
 #
 # Overall workflow:
 #   1. Load and explore the core data inputs
@@ -38,13 +53,17 @@ if (packageVersion("SpFut.flexiSDM") != "1.1.1") {
 #   6. Map estimated intensity and occupancy
 #   7. Compare estimates to the known truth
 #   8. Compare the integrated model to models fit to each dataset alone
-# ---------------------------------------------------------------------------
 
 
 
 # Set up environment ----
 library(tidyverse)
 library(SpFut.flexiSDM)
+
+
+# Set working directory - set the path to wherever you put the folder
+path <- "flexiSDM-great-salt-lake-cyclops/"
+setwd(path)
 
 # `data.RData` holds the four components this workflow revolves around:
 #   region        - the study area and its spatial grid (hexbins)
@@ -68,25 +87,26 @@ set.seed(1)
 
 # It has four components:
 
-# For a simulated species, range is NULL
-# For a real species, range is the boundary that was used to create the study region
+# For a simulated species, region$range is NULL
+# For a real species, region$range is the boundary that was used to create the study region
 region$range
 
 
-# region is the outer boundary of the study region
+# region$region is the outer boundary of the study region
 ggplot(region$region) + geom_sf()
 
 
-# sp.grid contains the spatial units for analysis
-# This example uses hexbins with area 25km2
+# region$sp.grid contains the spatial units for analysis
 ggplot(region$sp.grid) + geom_sf()
 nrow(region$sp.grid)
 # conus.grid.id is a unique label for each hexbin
 head(region$sp.grid)
 
+# This example uses hexbins with area 25km2, but when creating the region you 
+# can select either square cells or hexbins of any size (see vignette)
 
 
-# boundary dictates where the region is cut off
+# region$boundary dictates where the region is cut off
 # In this case, it is the same as region, but it can be different
 # E.g., you could use a state boundary to restrict the study region to within the state
 ggplot(region$boundary) + geom_sf()
@@ -189,6 +209,15 @@ cor_covar(covar = covar, cov.labs = cov.labs, color.threshold = 0.25)$plot
 
 
 
+## __ Small group discussion ----
+# 1. How many hexbins are in the study region?
+# 2. Which covariates are highly correlated? Why?
+# 3. Do the data represent all of the covariate space in the study
+#    region? What covariate space might be over or underrepresented?
+
+
+
+
 
 
 # Set up model components ----
@@ -273,6 +302,12 @@ spatRegion <- NULL
 
 
 
+## __ Small group discussion ----
+# 1. How many hexbins are used to train and test the model?
+# 2. How many data points are used to train and test the model?
+
+
+
 # Set up NIMBLE model ----
 
 # Five things are fed into the NIMBLE model, built below:
@@ -316,8 +351,8 @@ file.info
 
 
 # Getting to NIMBLE-ready inputs is a two-step process:
-#   1. sppdata_for_nimble() reshapes EACH observation dataset to prep it for NIMBLE.
-#   2. data_for_nimble() then bolts those onto the shared PROCESS model and
+#   1. sppdata_for_nimble() reshapes each observation dataset to prep it for NIMBLE.
+#   2. data_for_nimble() then groups those onto the shared process model and
 #      produces the final `data` + `constants`.
 
 # Step 1: format each dataset in species.data for nimble.
@@ -348,7 +383,7 @@ sp.data$count3
 sp.data$count4
 
 
-# Step 2: combine the per-dataset observation pieces with the shared PROCESS
+# Step 2: combine the per-dataset observation pieces with the shared process
 # (distribution) model
 tmp <- data_for_nimble(sp.data = sp.data,
                        region = region,
@@ -417,6 +452,11 @@ params <- nimble_params(data = data,
                         effort = FALSE)
 
 
+## _Small group discussion ----
+# 1. What are some examples of detection covariates for the types of data 
+#    you use? These would be listed in `file.info`
+
+
 # Fit the model ----
 
 ## Fit the model ----
@@ -481,9 +521,8 @@ if (run.during.break) {
 }
 
 
-# If you were unable to fit the model (e.g. run.during.break = FALSE, or the fit
-# failed), use a pre-computed `out` saved on disk so the rest of the
-# script still runs.
+# If you were unable to fit the model, use a pre-computed `out` 
+# so the rest of the script still runs.
 if (!exists("out")) {
   load("data/output.RData")
 }
@@ -518,6 +557,7 @@ plot_chains(samples, data = data, constants = constants, cov.labs = cov.labs,
 plot_pars(out = out$obs.coef, cov.labs = cov.labs)$plot
 
 
+
 # Map estimates ----
 
 # map_species_data() draws the model's spatial predictions across the hexbins.
@@ -544,6 +584,12 @@ map_species_data(title = "Estimated occupancy probability",
 
 # See documentation for many more options to map
 ?map_species_data()
+
+
+## _Small group discussion ----
+# 1. Plot the estimated spatial effect
+# 2. Plot the uncertainty on the lambda estimate
+
 
 # Compare model estimates to truth ----
 
@@ -577,9 +623,8 @@ sim_compare(out, true = datalist, plot = "obs")$plot
 
 
 
-# Compare model estimates with SDMs fit with each individual dataset ----
 
-# Does combining all datasets beat fitting each dataset on its own? 
+# Is combining all datasets better than fitting each dataset on its own? 
 # The saved objects below hold sim_compare() results from single-dataset models 
 # (one per dataset). We append the results from our integrated ("all") model 
 # and plot them side by side against truth.
@@ -671,3 +716,8 @@ ggplot(all.lamb.sf) +
   # color scale
   scale_fill_gradient2() +
   scale_color_gradient2()
+
+
+## _Small group discussion ----
+# 1. How well does the integrated model recover the parameters?
+# 2. Which model performs best? Which performs worst?
