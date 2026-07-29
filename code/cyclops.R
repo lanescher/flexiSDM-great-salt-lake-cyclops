@@ -524,7 +524,7 @@ if (run.during.break) {
 # If you were unable to fit the model, use a pre-computed `out` 
 # so the rest of the script still runs.
 if (!exists("out")) {
-  load("data/output.RData")
+  out <- read_rds("data/output.rds")
 }
 
 
