@@ -2,17 +2,14 @@
 # Install the SpFut.flexiSDM package (this tutorial uses v1.1.1). 
 # When prompted, enter `1` to update all required packages
 
-if (packageVersion("SpFut.flexiSDM") != "1.1.1") {
-  
-  # This package is not on CRAN, so you can't install it the way you would normally 
-  # install a package.
-  
-  remotes::install_git(
-    "https://code.usgs.gov/eastern-ecological-science-center/nearmi/SpFut-flexiSDM.git",
-    ref = "1.1.1"
-  )
-  
-}
+# This package is not on CRAN, so you can't install it the way you would normally 
+# install a package.
+
+remotes::install_git(
+  "https://code.usgs.gov/eastern-ecological-science-center/nearmi/SpFut-flexiSDM.git",
+  ref = "1.1.1"
+)
+
 
 
 # Install Rtools, if you do not have it already. Select the correct version
@@ -364,7 +361,7 @@ sp.data <- sppdata_for_nimble(species.data = species.data,
                               file.info = file.info, 
                               covs.PO = covs.PO,
                               keep.conus.grid.id = gridkey$conus.grid.id[gridkey$group == "train"],
-
+                              
                               # what types of observation models to use
                               occ.mod = TRUE,
                               nmix.mod = TRUE,
@@ -475,7 +472,7 @@ burnin <- floor(iter * 0.75)
 run.during.break <- TRUE
 
 if (run.during.break) {
-
+  
   # nimbleParallel() runs the MCMC chains in parallel and returns the posterior
   # samples. This is the actual model-fitting step.
   samples <- nimbleParallel(code = code,
@@ -489,7 +486,7 @@ if (run.during.break) {
   
   
   ## Summarize model output ----
-
+  
   # get_derived() adds derived quantities (e.g. per-cell occupancy)
   # to the raw samples of each chain, computed from the monitored parameters.
   samples <- lapply(samples,
@@ -504,7 +501,7 @@ if (run.during.break) {
                     sp.auto = TRUE,
                     coarse.grid = FALSE,
                     spatRegion = spatRegion)
-
+  
   # summarize_samples() collapses the chains into tidy per-parameter summaries
   # (posterior means, credible intervals, Rhat, ESS). `out` is what the plotting
   # and comparison functions below consume.
@@ -540,7 +537,7 @@ if (!exists("out")) {
 
 # view beta (process) parameters -- the shared covariate effects on distribution
 plot_chains(samples, data = data, cov.labs = cov.labs,
-                       plot = "B", cutoff = 0)$plot
+            plot = "B", cutoff = 0)$plot
 plot_pars(out = out$process.coef, cov.labs = cov.labs)$plot
 # plot_effects() shows the fitted response curve for each covariate, on the
 # original (unscaled) covariate axis.
@@ -548,7 +545,7 @@ plot_effects(data = data, out = out, cov.labs = cov.labs, unscale_covar = TRUE)$
 
 # View chains for dataset intercepts (alpha)
 plot_chains(samples, data = data, constants = constants, cov.labs = cov.labs,
-                       plot = "alpha", cutoff = 0)$plot
+            plot = "alpha", cutoff = 0)$plot
 plot_pars(out = out$alpha, cov.labs = cov.labs)$plot
 
 # View chains for detection parameters
@@ -675,7 +672,7 @@ lamb <- sim_compare(out, true = true, plot = "lambda")$dat %>%
 all.lamb <- bind_rows(all.lamb, lamb)
 
 ggplot(all.lamb) +
-
+  
   # plot lambdas
   geom_point(aes(x = true, y = mean, color = model)) +
   
@@ -712,7 +709,7 @@ ggplot(all.lamb.sf) +
 ggplot(all.lamb.sf) +
   geom_sf(aes(fill = mean - true, color = mean - true)) +
   facet_wrap(~ model) +
-
+  
   # color scale
   scale_fill_gradient2() +
   scale_color_gradient2()
