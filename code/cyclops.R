@@ -62,7 +62,7 @@ library(SpFut.flexiSDM)
 
 
 # Set working directory - set the path to wherever you put the folder
-path <- "flexiSDM-great-salt-lake-cyclops/"
+path <- "flexiSDM-great-salt-lake-cyclops-main/"
 setwd(path)
 
 # `data.RData` holds the four components this workflow revolves around:
