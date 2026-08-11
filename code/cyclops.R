@@ -1,4 +1,14 @@
 
+
+# Install Rtools, if you do not have it already. Select the correct version
+# of Rtools from this page: https://cran.r-project.org/bin/windows/Rtools/ 
+# based on your version of R.
+# (to figure out what version of R you are using:)
+getRversion()
+
+# Now restart R.
+
+
 # Install the SpFut.flexiSDM package (this tutorial uses v1.1.1). 
 # When prompted, enter `1` to update all required packages
 
@@ -12,13 +22,7 @@ remotes::install_git(
 
 
 
-# Install Rtools, if you do not have it already. Select the correct version
-# of Rtools from this page: https://cran.r-project.org/bin/windows/Rtools/ 
-# based on your version of R.
-# (to figure out what version of R you are using:)
-getRversion()
 
-# Now restart R.
 
 # _______________________________________________________________ ----
 
