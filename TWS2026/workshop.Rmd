@@ -1,0 +1,1022 @@
+---
+title: "flexiSDM"
+subtitle: "2026 TWS"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    highlight: tango
+vignette: >
+  %\VignetteIndexEntry{Integrated SDMs with flexiSDM}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = TRUE,# Set to TRUE to run live; FALSE renders code without execution
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 7,
+  fig.height = 6,
+  cache = TRUE,
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# Introduction
+
+This vignette walks you through fitting an **integrated species
+distribution model (iSDM)** using the `SpFut.flexiSDM` package. We work with a
+fictional species---the **Great Salt Lake Cyclops**---to demonstrate how to
+integrate multiple datasets into a single model.
+
+## Learning objectives
+
+By the end of this workshop you will be able to:
+
+1. Define a study region with associated environmental covariates
+2. Set up and fit an integrated SDM in NIMBLE via `SpFut.flexiSDM`
+3. Summarize and visualize model output
+4. Compare model estimates against known truth 
+
+
+# Prerequisites
+
+Confirm that you have the correct package version installed. This package
+is stored on GitLab, NOT CRAN, so you need to use `remotes::install_git()` 
+rather than `install.packages()`.
+
+```{r install, eval=FALSE}
+remotes::install_git("https://code.usgs.gov/eastern-ecological-science-center/nearmi/SpFut-flexiSDM.git", force = T)
+
+packageVersion("SpFut.flexiSDM") == "1.1.3"
+```
+
+Load the packages used throughout and set a seed for reproducibility.
+
+```{r libraries}
+library(tidyverse)
+library(SpFut.flexiSDM)
+
+set.seed(1)
+```
+
+# Understanding the inputs
+
+We begin from pre-built data. The section `Simulate data` at the end
+of this tutorial demonstrates how to simulate the data.
+
+```{r load-data}
+load("TWS2026/data/data.RData", verbose = TRUE)
+```
+
+## The region
+
+A `region` object has four components. It can be created by `make_region()`
+(real species) or `format_sim()` (simulated species).
+
+| Component   | What it is                                                      |
+|-------------|----------------------------------------------------------------|
+| `range`     | Boundary used to build the study region (`NULL` for simulated range)  |
+| `region`    | Outer boundary of the study region                             |
+| `sp.grid`   | Spatial analysis units (here, 25 km² hexbins)                  |
+| `boundary`  | Where the region is cut off (can differ from `region`)         |
+
+```{r inspect-region}
+# For a simulated species, range is NULL
+region$range
+
+# Outer boundary of the study region
+ggplot(region$region) + geom_sf()
+
+# sp.grid holds the spatial units for analysis (25 km2 hexbins)
+ggplot(region$sp.grid) + geom_sf()
+nrow(region$sp.grid)
+
+# conus.grid.id is a unique label for each hexbin
+head(region$sp.grid)
+
+# boundary dictates where the region is cut off
+# (here identical to region, but it could be e.g. a state boundary)
+ggplot(region$boundary) + geom_sf()
+```
+
+> **Note.** `conus.grid.id` is the key that links every dataset, covariate, and
+> output back to a specific hexbin.
+
+## Species data
+
+The `species.data` object (from `load_species_data()` or `format_sim()`) has two elements:
+
+- **`locs`** --- where each data point sits in discrete (`disc`, assigned to a
+  hexbin) and continuous (`cont`, coordinates) space. This is useful for mapping.
+- **`obs`** --- a list where each element holds date, location, and count info
+  for one dataset. 
+
+```{r inspect-species-locs}
+head(species.data$locs$disc)
+head(species.data$locs$cont)
+
+# Overlay observation locations on the region, colored by source
+ggplot() +
+  geom_sf(data = region$region) +
+  geom_sf(data = species.data$locs$cont, aes(color = source))
+```
+
+```{r inspect-species-obs}
+# Peek at each dataset
+head(species.data$obs$iNat)   # presence-only
+head(species.data$obs$NSLBB)  # detection / non-detection
+head(species.data$obs$UMCC)   # count
+head(species.data$obs$SLCBS)  # count, repeated visits
+```
+
+Visualize everything together with `map_species_data()`.
+
+```{r map-samples}
+map_species_data(title = "Simulated data",
+                 region = region,
+                 plot = "samples",
+                 sim = TRUE,
+                 details = TRUE,
+                 species.data = species.data,
+                 inat.agg = FALSE,
+                 plot.range = FALSE,
+                 plot.region = TRUE,
+                 subtitle = FALSE,
+                 out = NULL)$plot
+```
+
+## Covariates
+
+Environmental covariates live in a data frame (`covar`) with `conus.grid.id` that
+matches `region$sp.grid`. Values must already be **scaled**, and quadratic terms must be
+**pre-squared**.
+
+```{r define-covs}
+# Linear + quadratic covariates for the ecological process
+covs.z  <- c("wetland", "footprint", "S", "elevation", "elevation2")
+
+# Covariates for the presence-only (iNat) observation process.
+# Because PO data are modeled at the hexbin level, these must also live in covar.
+covs.PO <- c("effort")
+
+
+head(covar)
+```
+
+```{r map-covs}
+gridcovar <- full_join(region$sp.grid, covar, by = "conus.grid.id")
+
+ggplot(gridcovar) + geom_sf(aes(fill = wetland))
+ggplot(gridcovar) + geom_sf(aes(fill = elevation))
+```
+
+Attach labels, then plot the covariates and check correlations.
+
+```{r cov-labels}
+cov.labs <- data.frame(
+  covariate = names(covar),
+  Label = c("conus.grid.id", "Wetland", "Footprint", "Elevation",
+            "Elevation^2", "South", "Effort")) %>%
+  filter(covariate != "conus.grid.id")
+
+cov.labs
+```
+
+```{r plot-covs}
+plot_covar(covar = covar, 
+           region = region, 
+           cov.labs = cov.labs, 
+           scaled = TRUE)$plot
+
+cor_covar(covar = covar, 
+          cov.labs = cov.labs, 
+          color.threshold = 0.25)$plot
+```
+
+> **Checkpoint.** Highly correlated covariates (flagged by `cor_covar()`) can
+> destabilize estimates. Inspect the correlation plot before proceeding.
+
+
+# Setting up model components
+
+## The gridkey and cross-validation
+
+The `gridkey` maps hexbins to NIMBLE indices and assigns each to a `"test"` or
+`"train"` group. We first generate spatial blocks for cross-validation.
+
+```{r cv-blocks}
+# k = number of folds the blocks are grouped into
+spatblocks <- make_CV_blocks(region, rows = 5, cols = 5, k = 3)
+
+head(spatblocks)
+
+ggplot() +
+  geom_sf(data = spatblocks, aes(fill = as.factor(folds))) +
+  geom_sf(data = region$region, fill = NA)
+```
+
+Choose which fold to hold out. `"none"` uses all data for training.
+
+```{r gridkey}
+fold.out <- "none"
+gridkey  <- make_gridkey(region, spatblocks, fold.out = fold.out)
+
+head(gridkey)
+
+# Visualize the train/test split
+key <- full_join(region$sp.grid, gridkey, by = "conus.grid.id")
+ggplot() + geom_sf(data = key, aes(fill = group))
+```
+
+> **Try it.** Set `fold.out = 1` and re-plot. The cells in fold 1 become test
+> data; to evaluate predictive performance, you could predict intensity in these
+> cells and then compare the predicted values to the truth.
+
+```{r gridkey-fold1}
+gridkey1 <- make_gridkey(region, spatblocks, fold.out = 1, method = "overlap")
+
+key1 <- full_join(region$sp.grid, gridkey1, by = "conus.grid.id")
+ggplot() + geom_sf(data = key1, aes(fill = group))
+```
+
+## Spatial random effect
+
+The ICAR spatial random effect can be estimated on a **coarse grid** to cut
+runtime: rather than one random effect per hexbin, effects are estimated per
+group of hexbins.
+
+```{r spatregion}
+spatRegion <- suppressWarnings(make_spatkey(region$sp.grid))
+
+# spatkey maps each conus.grid.id to a spat.grid.id
+spatRegion$spatkey[1:10,]
+
+# spatgrid is an sf object containing the coarse grid
+head(spatRegion$spat.grid)
+ggplot(spatRegion$spat.grid) + geom_sf()
+```
+
+For this vignette we estimate without the coarse grid, so set spatRegion to `NULL`.
+
+```{r spatregion-null}
+spatRegion <- NULL
+```
+
+# Building the NIMBLE model
+
+## Describe your datasets with file.info
+
+Each dataset needs a row describing its type and detection covariates.
+
+| Field        | Meaning                                                       |
+|--------------|--------------------------------------------------------------|
+| `file.label` | Must match `names(species.data$obs)`                         |
+| `data.type`  | `"PO"`, `"DND"`, or `"count"`                                |
+| `covar.mean` | Detection covariate(s) averaged across passes               |
+| `covar.sum`  | Detection covariate(s) summed across passes                 |
+| `PO.extent`  | `"CONUS"` or a two-letter state code (`NA` for non-PO)      |
+
+```{r file-info}
+file.info <- data.frame(file.label = c("iNat", "NSLBB", "UMCC", "SLCBS"),
+                        data.type  = c("PO",   "DND",   "count", "count"),
+                        covar.mean = c("effort", "cov.siteA", "cov.siteA", "cov.siteA"),
+                        covar.sum  = c(NA, NA, NA, NA),
+                        PO.extent  = c("CONUS", NA, NA, NA))
+
+file.info
+```
+
+## Format species data for NIMBLE
+
+The species data are formatted into `data` and `constants`, which eventually go into NIMBLE.
+
+```{r sppdata}
+sp.data <- sppdata_for_nimble(species.data = species.data,
+                              region = region,
+                              covar = covar,
+                            
+                              # things defined earlier
+                              file.info = file.info,
+                              covs.PO = covs.PO,
+                              keep.conus.grid.id = gridkey$conus.grid.id[gridkey$group == "train"],
+                            
+                              # which observation models to use
+                              occ.mod = TRUE,
+                              nmix.mod = TRUE,
+                              min.visits.incl = 3,
+                            
+                              # these options only apply to real data; see the companion vignette
+                              stategrid = NULL,
+                              statelines.rm = FALSE)
+
+# One formatted element per dataset
+names(sp.data)
+
+
+lapply(sp.data$PO1$data, head)
+lapply(sp.data$PO1$constants, head)
+
+lapply(sp.data$DND2$data, head)
+lapply(sp.data$count3$data, head)
+lapply(sp.data$count4$data, head)
+```
+
+## Combine with the ecological process
+
+The environmental data for the region is added to the formatted species data.
+This section also sets up the spatial autocorrelation portion of the model. The
+output is a single `data` and `constants` that are ready for NIMBLE.
+
+```{r data-for-nimble}
+tmp <- data_for_nimble(sp.data = sp.data,
+                       covar = covar,
+                       covs.z = covs.z,
+                       sp.auto = TRUE,       # spatial autocorrelation
+                       coarse.grid = FALSE,
+                       region = region,
+                       gridkey = gridkey,
+                       spatRegion = NULL)
+
+data      <- tmp$data
+constants <- tmp$constants
+
+# Ready for NIMBLE
+lapply(data, head)
+lapply(constants, head)
+```
+
+## Generate code, initial values, and parameters
+
+`nimble_code()` writes the NIMBLE model from the information in `data` and
+`constants`. The same inputs generate initial values and the vector of
+parameters to monitor.
+
+```{r nimble-code}
+code <- nimble_code(data = data,
+                    constants = constants,
+                    path = tempdir(),
+                    block.out = fold.out,
+                    Bprior = "dnorm(0,1)",        # prior on coefficients
+                    
+                    # spatial model parameters
+                    sp.auto = TRUE,
+                    coarse.grid = FALSE,
+                    zero_mean = TRUE,
+                    tau = 1,
+                    
+                    # observation model
+                    min.visits.incl = 3,
+                    occ.mod = TRUE,
+                    nmix.mod = TRUE)
+
+inits <- function(x) {
+  nimble_inits(data = data,
+               constants = constants,
+               sp.auto = TRUE,
+               min.visits.incl = 3,
+               occ.mod = TRUE,
+               nmix.mod = TRUE,
+               seed = x)
+}
+
+params <- nimble_params(data = data,
+                        constants = constants,
+                        lambda = TRUE,
+                        XB = TRUE,
+                        sp.auto = TRUE,
+                        effort = FALSE)
+```
+
+# Fitting the model
+
+> **Workshop tip.** These settings keep runtime short for a live session. For
+> real analyses, increase `iter` substantially and confirm convergence before
+> interpreting results.
+
+```{r fit}
+iter   <- 5000
+thin   <- 5
+burnin <- floor(iter * 0.75)
+
+samples <- nimbleParallel(code = code,
+                          data = data,
+                          constants = constants,
+                          inits = inits,
+                          param = params,
+                          iter = iter,
+                          burnin = burnin,
+                          thin = thin)
+
+# Derive quantities (occupancy and projections) from the raw samples
+samples <- lapply(samples, get_derived,
+                  data = data,
+                  
+                  # this is where you would add projections, if there were new X data to project to in `data`
+                  project = 0,
+                  proj.data = data,
+                  
+                  sp.auto = TRUE,
+                  coarse.grid = FALSE,
+                  spatRegion = spatRegion)
+
+# Summarize across chains
+out <- summarize_samples(samples = samples,
+                         data = data,
+                         constants = constants,
+                         project = 0,
+                         coarse.grid = FALSE,
+                         block.out = fold.out,
+                         gridkey = gridkey,
+                         effort = FALSE,
+                         cores = 2L)
+```
+
+If fitting fails or time runs short, load the pre-computed output.
+
+```{r load-output}
+if (!exists("out")) load("TWS2026/data/output.RData")
+```
+
+# Inspecting results
+
+## Convergence and coefficients
+
+Always check chains before interpreting estimates.
+
+```{r chains-beta}
+# Process (beta) coefficients
+plot_chains(samples, 
+            data = data, 
+            cov.labs = cov.labs, 
+            plot = "B", 
+            cutoff = 0)$plot
+
+plot_pars(out = out$process.coef, 
+          cov.labs = cov.labs)$plot
+
+plot_effects(data = data, 
+             out = out, 
+             cov.labs = cov.labs, 
+             unscale_covar = TRUE)$plot
+```
+
+```{r chains-alpha}
+# Dataset intercepts (alpha)
+plot_chains(samples, 
+            data = data, 
+            constants = constants,
+            cov.labs = cov.labs, 
+            plot = "alpha", 
+            cutoff = 0)$plot
+
+plot_pars(out = out$alpha, 
+          cov.labs = cov.labs)$plot
+```
+
+```{r chains-obs}
+# Observation coefficients
+plot_chains(samples, 
+            data = data, 
+            constants = constants,
+            cov.labs = cov.labs, 
+            plot = "observation", 
+            cutoff = 0)$plot
+
+plot_pars(out = out$obs.coef, 
+          cov.labs = cov.labs)$plot
+```
+
+> **Checkpoint.** Look for well-mixed, overlapping chains ("fuzzy
+> caterpillars"). Poor mixing means you need more iterations. Sometimes,
+> poor mixing can also be a sign of insufficient data.
+
+## Map predictions
+
+```{r map-lambda}
+# Relative abundance (intensity)
+map_species_data(title = "Estimated intensity",
+                 region = region, out = out, sim = TRUE,
+                 plot = "lambda", plot.range = FALSE, plot.region = TRUE)$plot
+```
+
+```{r map-psi}
+# Occupancy probability
+map_species_data(title = "Estimated occupancy probability",
+                 region = region, out = out, sim = TRUE,
+                 plot = "psi", plot.range = FALSE, plot.region = TRUE)$plot
+```
+
+# Comparing estimates to truth
+
+Because this is simulated, we know the true parameters. Use `sim_compare()` to
+evaluate recovery. Most `flexiSDM` plotting functions return a list with `$plot`
+(a ggplot object) and `$data` (the underlying data frame).
+
+```{r sim-compare}
+names(datalist) <- names(species.data$obs)
+
+tmp <- sim_compare(out, true = true, plot = "process")
+tmp$plot
+tmp$data
+
+sim_compare(out, true = true, plot = "process")$plot  # process coefficients
+sim_compare(out, true = true, plot = "lambda")$plot   # intensity
+sim_compare(out, true = true, plot = "spat")$plot     # spatial effect
+
+sim_compare(out, true = datalist, plot = "alpha")$plot  # intercepts
+sim_compare(out, true = datalist, plot = "obs")$plot    # observation params
+```
+
+> **Discussion.** How close are the estimates to the "truth"? Which
+> parameters are recovered well, and which are uncertain?
+
+# Why we need data integration
+
+The central motivation for iSDMs is that **combining datasets generally beats using
+any one alone**. We demonstrate this by comparing the integrated model against
+models fit to each dataset separately. Pre-computed single-dataset outputs are
+provided.
+
+```{r load-individual}
+load("TWS2026/data/model-outputs.RData", verbose = TRUE)
+```
+
+## Compare process parameters
+
+Look for the `"all"` model producing estimates **closer to truth** with
+**tighter intervals** than the single-dataset models.
+
+```{r compare-process}
+proc <- sim_compare(out, 
+                    true = true, 
+                    plot = "process")$dat %>%
+        mutate(model = "all")  # label the integrated model
+
+all.proc <- bind_rows(all.proc, proc)   # add to single-dataset results
+
+ggplot(all.proc) +
+  geom_hline(yintercept = 0) +
+  geom_hline(aes(yintercept = true), color = "darkblue",
+             linetype = "dashed", linewidth = 0.75) +
+  geom_pointrange(aes(x = covariate, y = mean, ymin = lo, ymax = hi,
+                      color = model, group = model),
+                  position = position_dodge(width = 0.8)) +
+  facet_wrap(~ covariate, scales = "free_x") +
+  theme_bw()
+```
+
+
+
+## Compare intensity estimates
+
+The best predictions fall closest to the 1-to-1 line.
+
+```{r compare-lambda}
+lamb <- sim_compare(out, true = true, plot = "lambda")$dat %>%
+          mutate(model = "all")
+all.lamb <- bind_rows(all.lamb, lamb)
+
+# Estimated vs. true
+ggplot(all.lamb) +
+  geom_abline(intercept = 0, slope = 1) +
+  geom_point(aes(x = true, y = mean, color = model)) +
+  facet_wrap(~ model, scales = "free") +
+  coord_cartesian(xlim = c(0, 50), ylim = c(0, 50)) +
+  theme_bw()
+```
+
+
+## Map intensity and error
+
+```{r map-compare}
+all.lamb.sf <- region$sp.grid %>%
+  full_join(all.lamb, by = "conus.grid.id")
+
+# Truncate extreme values for a readable color scale
+q90 <- quantile(all.lamb.sf$mean, 0.90)
+all.lamb.sf$mean[all.lamb.sf$mean > q90] <- q90
+
+# Estimated intensity by model
+ggplot(all.lamb.sf) +
+  geom_sf(aes(fill = mean, color = mean)) +
+  facet_wrap(~ model) +
+  viridis::scale_fill_viridis(option = "magma") +
+  viridis::scale_color_viridis(option = "magma")
+
+# Deviation from truth (blue = under, red = over)
+ggplot(all.lamb.sf) +
+  geom_sf(aes(fill = mean - true, color = mean - true)) +
+  facet_wrap(~ model) +
+  scale_fill_gradient2() +
+  scale_color_gradient2()
+```
+
+> **Discussion.** Which single-dataset models show the largest spatial bias?
+> Where does integration help most---and why might that relate to where each
+> dataset was collected?
+
+> **Check your understanding.**
+>
+> - *Compared to single-dataset models, what do we expect from an integrated
+>   SDM?*
+> - *Which single-dataset model performs best, and which performs worst? Why?*
+> - *Why should you always inspect the chains before interpreting estimates?*
+
+# Appendix: Simulate data
+
+For reference, the workshop data were generated with the workflow below. You do
+**not** need to run this during the workshop---the pre-built `data.RData` is
+loaded at the start---but it clarifies *why* the datasets differ and provides a
+template if you want to simulate your own species.
+
+A single true species distribution is simulated from scaled covariates plus a
+small spatial field. Four datasets are then drawn from that one truth, each
+mimicking a real-world sampling style:
+
+| Dataset   | Type                         | Sampling design                                  |
+|-----------|------------------------------|--------------------------------------------------|
+| **iNat**  | Presence-only (`sim_POdat`)  | Opportunistic; effort correlated with footprint  |
+| **NSLBB** | Detection/non-detection      | 100 sites randomly placed around the nothern part of the Great Salt Lake, 1 visit        |
+| **UMCC**  | Count (`sim_surveydat`)      | 50 sites spaced throughout Utah, 1 visit             |
+| **SLCBS** | Count (`sim_surveydat`)      | 20 sites randomly placed near Salt Lake City, 10 visits   |
+
+Each dataset covers a **different region** and carries **different biases**---
+exactly the situation integrated SDMs are built to exploit.
+
+## Setup
+
+The simulation uses a few extra packages---`SpFut.covariates` for downloading
+environmental layers, `rnaturalearth` for map data, and `sf` for spatial
+operations.
+
+```{r sim-setup, eval=TRUE, results=FALSE}
+library(SpFut.flexiSDM)
+# remotes::install_git("https://code.usgs.gov/eastern-ecological-science-center/nearmi/SpFut-covariates.git")
+library(SpFut.covariates)
+library(rnaturalearth)
+library(sf)
+library(tidyverse)
+
+set.seed(1)
+```
+
+## Defining the region
+
+We anchor the study area on real geography: the Great Salt Lake (GSL) and Salt Lake City (SLC). These are pulled from Natural Earth. The lake becomes the species' core range, and the city is used later to place an urban survey dataset.
+
+```{r sim-landmarks, eval=TRUE}
+# Great Salt Lake
+GSL <- ne_download(scale = 10, type = "lakes",
+                   category = "physical", returnclass = "sf") %>%
+        filter(name == "Great Salt Lake")
+
+# Salt Lake City point
+slc_point <- ne_download(scale = 10, type = "populated_places",
+                         category = "cultural", returnclass = "sf") %>%
+              filter(NAME == "Salt Lake City")
+
+# Salt Lake City outline: the urban area polygon that contains the SLC point
+urban <- ne_download(scale = 10, type = "urban_areas",
+                     category = "cultural", returnclass = "sf") %>%
+          st_transform(st_crs(slc_point))
+SLC <- urban[st_intersects(urban, slc_point, sparse = FALSE), ]
+
+ggplot() +
+  geom_sf(data = GSL, fill = "blue") +
+  geom_sf(data = SLC, fill = "brown")
+```
+
+We buffer the lake by 100 km, then lay down a hexagonal grid. The hexagon size is computed from the target cell area (25 km²). Finally, `make_region()` packages the range, buffer, and grid into the `region` object.
+
+```{r sim-region, eval=TRUE}
+# use Great Salt Lake as starting area, add buffer
+buffer <- 100000
+gridstart <- GSL %>%
+              st_transform(crs = 3857) %>%
+              st_buffer(buffer)
+
+# create grid
+cellarea <- 25e6  # hexbins with 25km2 area -- smaller would raise runtime a lot
+cellsize <- 2 * sqrt(cellarea/((3*sqrt(3)/2))) * sqrt(3)/2 # length across hexagon
+conus.grid <- st_make_grid(gridstart, cellsize = cellsize, square = F) %>%
+              st_as_sf() %>% 
+              rename(geometry = x) %>% 
+              mutate(conus.grid.id = 1:nrow(.))
+
+# create region
+region <- make_region(rangelist = list(lake = GSL),
+                      buffer = buffer,
+                      grid = conus.grid)
+
+ggplot() +
+  geom_sf(data = region$sp.grid) +
+  geom_sf(data = GSL, fill = "blue") +
+  geom_sf(data = SLC, fill = "brown")
+```
+
+## Building covariates
+
+Real environmental layers (landcover, human footprint, elevation) are
+downloaded for each hexbin via the `SpFut.covariates` helpers. We keep wetland,
+water, elevation, footprint, and a south-facing indicator (`S`).
+
+```{r sim-cov-download, eval=FALSE}
+land <- get_landcover(locs = region$sp.grid, 
+                      path = "TWS2026/data/", 
+                      id.label = "conus.grid.id")
+footprint <- get_footprint(locs = region$sp.grid, 
+                           id.label = "conus.grid.id")
+elev <- get_elevation(locs = region$sp.grid, 
+                      path = "TWS2026/data/", 
+                      id.label = "conus.grid.id")
+
+# join covariates
+covar <- full_join(land, footprint, by = "conus.grid.id") %>%
+          full_join(elev, by = "conus.grid.id") %>%
+          select(conus.grid.id, wetland, water, elevation, footprint, S) %>%
+          rename(grid.id = conus.grid.id)
+covar$wetland[which(covar$wetland > 0.5)] <- 0.5 # lower extreme wetland values to help model run better
+```
+
+Recall the modeling requirement that covariates be **scaled**. Here we save an
+unscaled copy, then scale all numeric columns with `scale_this()`---the same
+convention the fitting workflow expects.
+
+```{r sim-cov-scale, eval=FALSE}
+covar_unscaled <- covar
+
+# scale numeric cols
+numcols <- sapply(covar, is.numeric)
+numcols <- which(numcols)
+covar[,numcols] <- sapply(covar[,numcols], scale_this)
+
+summary(covar)
+
+# visualize covariates
+covlabs <- data.frame(covariate = c("wetland", "elevation", "footprint", "S"),
+                      Label = c("Wetland", "Elevation", "Footprint", "South-facing"))
+
+plot_covar(rename(covar, 
+                  conus.grid.id = grid.id),
+                  region,
+                  cov.labs = covlabs,
+                  scaled = T)$plot
+
+cor_covar(rename(covar, 
+                 conus.grid.id = grid.id),
+                 covlabs)$plot
+```
+
+## Simulating the true species
+
+Now we define the "truth." We choose a coefficient for each covariate---these are the values the fitted model will try to recover---and add the quadratic `elevation2` term. A small spatial field (`spat`) adds autocorrelated noise; dividing by 10,000 keeps it small relative to the covariate effects (`XB`).
+
+```{r sim-species-params, eval=FALSE}
+# Specify parameters
+covs.z <- c("wetland", "footprint", "elevation", "elevation2", "S")
+params <- c(0.46, -0.34, 0.27, -0.06, -0.21)
+names(params) <- covs.z
+
+# create quadratic term
+covar <- covar %>%
+          mutate(elevation2 = elevation * elevation) %>%
+          select(all_of(c("grid.id", covs.z)))
+
+# rename grid.id
+grid <- region$sp.grid %>% rename(grid.id = conus.grid.id)
+
+# create spatial noise
+# we want this to be small compared to XB, so divide it by 10000
+spat <- data.frame(grid.id = grid$grid.id,
+                   spat = sim_cov(locs = grid, range = 100000)/10000)
+summary(spat$spat)
+```
+
+With parameters and spatial field in hand, `sim_species()` produces the true
+intensity surface, which we compare against later.
+
+```{r sim-species-run, eval=FALSE}
+# put together use list
+use <- list(grid.sim = grid,
+            grid.inf = grid,
+            covar = covar,
+            param = params,
+            spat = spat)
+
+# simulate species!
+sp <- sim_species(use = use)
+
+map_species_data(title = "Simulated species",
+                 plot  = "true",
+                 sim   = sp)$plot
+
+summary(sp$true$intensity)
+```
+
+## Simulating the datasets
+
+From one true distribution we draw **four datasets of different types and with different biases**. 
+
+### iNat (presence-only)
+
+Presence-only data mimic opportunistic citizen-science records. We build an `effort` surface that is loosely correlated with human footprint plus noise, then `sim_POdat()` generates presences where both the species and observer effort are high.
+
+```{r sim-inat, eval=FALSE}
+# Create effort metric - slightly correlated with human footprint but lots of noise
+effort <- (sim_cov(locs = grid, range = 10) + footprint$footprint/10)
+
+ggplot(grid) + 
+  geom_sf(aes(fill = effort))
+
+# create use list
+covar.eff <- data.frame(grid.id = grid$grid.id,
+                        effort = scale(effort))
+param <- c("effort" = 3.06)
+
+use <- list(covar = covar.eff, param = param, alpha = 0.01)
+
+# simulate
+start <- Sys.time()
+inat <- sim_POdat(true      = sp,
+                  use       = use,
+                  cell.area = 0.005)
+
+Sys.time() - start
+nrow(inat$dat)
+```
+
+### Northern Salt Lake Beast Brigade (detection/non-detection)
+
+A structured survey covering only the **northern** part of the region (above
+41.2° latitude). We crop to that area, place 100 random sites, and
+`sim_surveydat()` generates detection/non-detection records. Note the restricted
+spatial extent---this is a deliberate bias the integrated model must handle.
+
+```{r sim-nslbb, eval=FALSE}
+# start with GSL, add buffer, then crop to above 41.2 lat
+buffGSL <- GSL %>%
+  st_transform(3857) %>% st_buffer(80000) %>%
+  st_transform(4326)
+
+cropbb <- buffGSL %>% st_bbox()
+cropbb["ymin"] <- 41.2
+northGSL <- st_crop(buffGSL, cropbb)
+
+# find grid cells in that region
+northGSLgrid <- st_intersection(st_transform(region$sp.grid, 4326), northGSL) %>%
+                select(conus.grid.id, geometry) %>%
+                rename(grid.id = conus.grid.id)
+
+# create locations within that region
+locs <- sim_survey_sites(grid = st_transform(northGSLgrid, 3857),
+                         method = "random", nsite = 100, nvisit = 1)
+
+# visualize
+ggplot() +
+  geom_sf(data = region$sp.grid, aes(fill = sp$true$intensity, 
+                                     color = sp$true$intensity)) +
+  geom_sf(data = northGSLgrid, fill = NA, color = "white") +
+  geom_sf(data = northGSL, fill = NA, color = "red") +
+  geom_sf(data = locs, color = "green")
+
+# create use list
+use <- list(locs = locs)
+
+# simulate
+NSLBB <- sim_surveydat(true      = sp,
+                       use       = use,
+                       survey.type = "DND",
+                       covFormSite = "linear",
+                       covFormVisit = "")
+```
+
+### Utah Mythical Creature Count (count)
+
+A count survey on a **regular** grid of 50 sites within Utah (below 42° latitude). 
+Counts carry more information than
+detection/non-detection, but coverage is spatially limited and the sites are
+very spread out.
+
+```{r sim-umcc, eval=FALSE}
+grid1 <- region$region %>% st_transform(crs = 4326)
+cropbb <- grid1 %>% st_bbox()
+cropbb["ymax"] <- 42
+
+grid1 <- st_crop(grid1, cropbb) %>%
+          st_intersection(st_transform(region$sp.grid, 4326), 
+                          region$sp.grid) %>%
+          select(conus.grid.id, geometry) %>%
+          rename(grid.id = conus.grid.id)
+
+locs <- sim_survey_sites(grid = st_transform(grid1, 3857),
+                         method = "regular", nsite = 50, nvisit = 1)
+
+use <- list(locs = locs)
+
+UMCC <- sim_surveydat(use = use,
+                      true      = sp,
+                      survey.type = "count",
+                      covFormSite = "linear",
+                      covFormVisit = "")
+```
+
+### SLC Biodiversity Survey (count, repeated visits)
+
+An intensive local survey near Salt Lake City: only 20 sites, but each visited
+**10 times**. Repeated visits let the model separate detection probability from
+true abundance---rich information over a tiny footprint.
+
+```{r sim-slcbs, eval=FALSE}
+# start with SLC, add buffer
+SLCgrid <- SLC %>%
+            st_transform(3857) %>% st_buffer(10000) %>%
+            st_transform(4326) %>%
+            st_intersection(st_transform(region$sp.grid, 4326)) %>%
+            select(conus.grid.id, geometry) %>%
+            rename(grid.id = conus.grid.id)
+
+# create use list
+locs <- sim_survey_sites(grid = st_transform(SLCgrid, 3857),
+                         method = "random", nsite = 20, nvisit = 10)
+
+use <- list(locs = locs)
+
+# simulate
+SLCBS <- sim_surveydat(true         = sp,
+                       use          = use,
+                       survey.type  = "count",
+                       covFormSite  = "linear",
+                       covFormVisit = "",
+                       link         = "logit")
+```
+
+> **Check your understanding.** Each dataset trades off coverage against
+> information content: iNat is broad but biased, NSLBB and UMCC are structured
+> but spatially restricted, and SLCBS is information-rich but tiny. No single one
+> sees the whole picture, which is why integrating them is critical.
+
+## Formatting and saving
+
+Finally, the four datasets are collected into a named list and passed to
+`format_sim()`, which returns the `region`, `species.data`, and `covar` objects
+in the shape the fitting workflow expects. We also save a couple of reference
+maps and strip `covForm` from the truth object for compatibility with
+flexiSDM v1.1.1, then save everything to `data.RData`---the file loaded at the
+start of this vignette.
+
+```{r sim-format-save, eval=FALSE}
+datalist <- list(PO_iNat = inat,
+                 DND_NSLBB = NSLBB,
+                 count_UMCC = UMCC,
+                 count_SLCBS = SLCBS)
+sim_out <- format_sim(true = sp,
+                      data = datalist)
+
+region       <- sim_out$region
+species.data <- sim_out$species.data
+covar        <- sim_out$covar
+
+# Add effort covariates for PO to covar
+covar <- full_join(covar, datalist$PO_iNat$covar, by = c("conus.grid.id" = "grid.id"))
+
+
+pl <- map_species_data(title = "Simulated data",
+                       region = region,
+                       plot = "samples",
+                       sim = T,
+                       details = T,
+                       species.data = species.data,
+                       inat.agg = FALSE,
+                       plot.range = FALSE,
+                       plot.region = TRUE,
+                       subtitle = FALSE)$plot
+
+pl <- map_species_data(title = "True distribution",
+                       region = region,
+                       plot = "true",
+                       sim = sp)$plot
+
+true <- sp
+# true$covForm <- NULL # remove covForm so that it works with flexiSDM v1.1.1
+
+save(region, datalist, species.data, covar, true,
+     file = "TWS2026/data/data.RData")
+```
+
