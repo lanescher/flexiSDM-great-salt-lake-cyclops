@@ -82,7 +82,7 @@ We begin from pre-built data. The section `Simulate data` at the end
 of this tutorial demonstrates how to simulate the data.
 
 ```{r load-data}
-load("TWS2026/data/data.RData", verbose = TRUE)
+load("data/data.RData", verbose = TRUE)
 ```
 
 ## The region
@@ -451,7 +451,7 @@ out <- summarize_samples(samples = samples,
 If fitting fails or time runs short, load the pre-computed output.
 
 ```{r load-output}
-if (!exists("out")) load("TWS2026/data/output.RData")
+if (!exists("out")) load("data/output.RData")
 ```
 
 # Inspecting results
@@ -555,7 +555,7 @@ models fit to each dataset separately. Pre-computed single-dataset outputs are
 provided.
 
 ```{r load-individual}
-load("TWS2026/data/model-outputs.RData", verbose = TRUE)
+load("data/model-outputs.RData", verbose = TRUE)
 ```
 
 ## Compare process parameters
@@ -739,12 +739,12 @@ water, elevation, footprint, and a south-facing indicator (`S`).
 
 ```{r sim-cov-download, eval=FALSE}
 land <- get_landcover(locs = region$sp.grid, 
-                      path = "TWS2026/data/", 
+                      path = "data/", 
                       id.label = "conus.grid.id")
 footprint <- get_footprint(locs = region$sp.grid, 
                            id.label = "conus.grid.id")
 elev <- get_elevation(locs = region$sp.grid, 
-                      path = "TWS2026/data/", 
+                      path = "data/", 
                       id.label = "conus.grid.id")
 
 # join covariates
@@ -1017,6 +1017,6 @@ true <- sp
 # true$covForm <- NULL # remove covForm so that it works with flexiSDM v1.1.1
 
 save(region, datalist, species.data, covar, true,
-     file = "TWS2026/data/data.RData")
+     file = "data/data.RData")
 ```
 
